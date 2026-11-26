@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
+        # tkinter ships with setup-python builds; the apt package is only a fallback
+      - run: pip install -r requirements-dev.txt
+      - run: xvfb-run -a python -m pytest -q
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            ext: .exe
+          - os: ubuntu-22.04
+            name: linux-x64
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Build GUI executable
+        run: pyinstaller --onefile --windowed --name gtnh-prism-installer run_gtnh_installer.py
+      - name: Build console (CLI) executable
+        run: pyinstaller --onefile --console --name gtnh-prism-installer-cli run_gtnh_installer.py
+      - name: Rename artifacts
+        shell: bash
+        run: |
+          mkdir out
+          cp "dist/gtnh-prism-installer${{ matrix.ext }}" "out/gtnh-prism-installer-${{ matrix.name }}${{ matrix.ext }}"
+          cp "dist/gtnh-prism-installer-cli${{ matrix.ext }}" "out/gtnh-prism-installer-cli-${{ matrix.name }}${{ matrix.ext }}"
+      - name: CLI smoke test
+        shell: bash
+        run: "./out/gtnh-prism-installer-cli-${{ matrix.name }}${{ matrix.ext }} --version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gtnh-prism-installer-${{ matrix.name }}
+          path: out/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
