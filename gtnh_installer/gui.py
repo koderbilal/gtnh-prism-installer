@@ -16,7 +16,7 @@ from . import __version__, javas
 from .i18n import detect_language, set_language, t
 from .install import JavaChoice, default_instance_name, default_java_major, detect_variant, install_instance
 from .prism import InstanceInfo, PrismPaths, detect_prism, list_instances, load_paths, minecraft_dir, read_instance
-from .theme import FG, apply_dark, center_on, dark_titlebar, style_text
+from .theme import FG, TabView, apply_dark, center_on, dark_titlebar, style_text
 from .update import OPTIONAL_ITEMS, MigrationOptions, detect_user_mods, present_items, update_instance
 from .util import Cancelled, Reporter, platform_info
 from .versions import GtnhVersion, fetch_versions, upgrade_skips_major
@@ -27,9 +27,9 @@ class App(tk.Tk):
         super().__init__()
         apply_dark(self)
         self.title(f"{t('app_title')} v{__version__}")
-        height = min(990, self.winfo_screenheight() - 90)
+        height = min(900, self.winfo_screenheight() - 80)
         self.geometry(f"940x{height}")
-        self.minsize(840, 700)
+        self.minsize(760, 520)
 
         self.versions: list[GtnhVersion] = []
         self.prism: Optional[PrismPaths] = None
@@ -42,27 +42,47 @@ class App(tk.Tk):
         self._build_banner()
         self._build_header()
         self._build_footer()  # packed at the bottom first so the log never gets pushed off-screen
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=14, pady=6)
-        self.install_tab = InstallTab(self.notebook, self)
-        self.update_tab = UpdateTab(self.notebook, self)
-        self.notebook.add(self.install_tab, text=t("tab_install"))
-        self.notebook.add(self.update_tab, text=t("tab_update"))
+        self.actions = ttk.Frame(self)  # always visible, outside the scrolling tab pages
+        self.actions.pack(side="bottom", fill="x", padx=14, pady=(2, 8))
+        self.tabs = TabView(self, on_change=self._tab_changed)
+        self.tabs.pack(fill="both", expand=True, padx=14, pady=(8, 4))
+        self.install_tab = InstallTab(self.tabs.add(t("tab_install")).body, self)
+        self.install_tab.pack(fill="x")
+        self.update_tab = UpdateTab(self.tabs.add(t("tab_update")).body, self)
+        self.update_tab.pack(fill="x")
+        self._build_actions()
 
         self.after(100, self._pump)
         self._detect_prism()
         self.reload_versions()
 
     def current_majors(self) -> tuple[list[int], list[int]]:
-        tab = self.update_tab if self.notebook.index(self.notebook.select()) == 1 else self.install_tab
-        return tab.majors()
+        return (self.update_tab if self.tabs.index() == 1 else self.install_tab).majors()
+
+    def _build_actions(self) -> None:
+        self.keep_zip_chk = ttk.Checkbutton(self.actions, text=t("keep_zip"), variable=self.install_tab.keep_zip)
+        self.action_btn = ttk.Button(self.actions, style="Accent.TButton", width=18, command=self._run_action)
+        self.action_btn.pack(side="right")
+        self._tab_changed(self.tabs.index())
+
+    def _tab_changed(self, index: int) -> None:
+        if not hasattr(self, "action_btn"):
+            return
+        self.action_btn.config(text=t("update_btn") if index == 1 else t("install_btn"))
+        if index == 1:
+            self.keep_zip_chk.pack_forget()
+        else:
+            self.keep_zip_chk.pack(side="left")
+
+    def _run_action(self) -> None:
+        (self.update_tab if self.tabs.index() == 1 else self.install_tab).run()
 
     # ------------------------------------------------------------------ layout
     def _build_banner(self) -> None:
         bar = ttk.Frame(self, style="Card.TFrame")
         bar.pack(fill="x")
         inner = ttk.Frame(bar, style="Card.TFrame")
-        inner.pack(fill="x", padx=18, pady=14)
+        inner.pack(fill="x", padx=18, pady=9)
         titles = ttk.Frame(inner, style="Card.TFrame")
         titles.pack(side="left")
         ttk.Label(titles, text=t("app_name"), style="Title.TLabel").pack(anchor="w")
@@ -94,7 +114,7 @@ class App(tk.Tk):
         self.progress.pack(side="left", fill="x", expand=True)
         self.cancel_btn = ttk.Button(row, text=t("cancel"), command=self._cancel, state="disabled")
         self.cancel_btn.pack(side="left", padx=(6, 0))
-        self.log_text = tk.Text(f, height=6, state="disabled", wrap="word")
+        self.log_text = tk.Text(f, height=4, state="disabled", wrap="word")
         style_text(self.log_text)
         self.log_text.pack(fill="x", pady=(6, 0))
 
@@ -175,8 +195,7 @@ class App(tk.Tk):
 
     def set_buttons_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        self.install_tab.action_btn.config(state=state)
-        self.update_tab.action_btn.config(state=state)
+        self.action_btn.config(state=state)
 
     def _pump(self) -> None:
         try:
@@ -597,12 +616,7 @@ class InstallTab(ttk.Frame):
         self.java = JavaPanel(self, app, self.majors)
         self.java.pack(fill="x", padx=6, pady=4)
 
-        bottom = ttk.Frame(self)
-        bottom.pack(fill="x", padx=6, pady=6)
         self.keep_zip = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bottom, text=t("keep_zip"), variable=self.keep_zip).pack(side="left")
-        self.action_btn = ttk.Button(bottom, text=t("install_btn"), command=self._install, style="Accent.TButton")
-        self.action_btn.pack(side="right")
 
     # ---
     def _visible(self) -> list[GtnhVersion]:
@@ -645,7 +659,7 @@ class InstallTab(ttk.Frame):
         if v and v.changelog_url:
             webbrowser.open(v.changelog_url)
 
-    def _install(self) -> None:
+    def run(self) -> None:
         v, prism = self.selected(), self.app.prism
         if not prism:
             return messagebox.showwarning(t("warning"), t("no_prism"), parent=self)
@@ -735,10 +749,6 @@ class UpdateTab(ttk.Frame):
         ttk.Checkbutton(opt, text=t("opt_jvm_args"), variable=self.jvm_var).grid(row=row + 1, column=1, sticky="w", padx=8)
 
         ttk.Label(self, text=t("backup_notice"), wraplength=860, justify="left").pack(fill="x", padx=6, pady=2)
-        bottom = ttk.Frame(self)
-        bottom.pack(fill="x", padx=6, pady=6)
-        self.action_btn = ttk.Button(bottom, text=t("update_btn"), command=self._update, style="Accent.TButton")
-        self.action_btn.pack(side="right")
 
     # --- state
     def majors(self) -> tuple[list[int], list[int]]:
@@ -862,7 +872,7 @@ class UpdateTab(ttk.Frame):
         ttk.Button(dlg, text=t("ok"), command=ok).pack(pady=6)
 
     # --- go
-    def _update(self) -> None:
+    def run(self) -> None:
         prism, inst, v = self.app.prism, self.selected_instance(), self.target()
         if not prism:
             return messagebox.showwarning(t("warning"), t("no_prism"), parent=self)

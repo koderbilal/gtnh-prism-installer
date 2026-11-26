@@ -214,3 +214,101 @@ def style_text(widget: tk.Text) -> None:
         padx=8,
         pady=6,
     )
+
+
+TAB_ACTIVE = "#313857"
+
+
+class ScrollPage(ttk.Frame):
+    """Vertically scrollable page; the scrollbar only appears when the content does not fit."""
+
+    def __init__(self, parent: tk.Misc):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
+        self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.bar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.body = ttk.Frame(self.canvas)
+        self._win = self.canvas.create_window(0, 0, window=self.body, anchor="nw")
+        self.body.bind("<Configure>", lambda e: self._sync())
+        self.canvas.bind("<Configure>", lambda e: self._sync())
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind_all(seq, self._wheel, add="+")
+
+    def _sync(self) -> None:
+        width, height = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self.canvas.itemconfigure(self._win, width=width)
+        need = self.body.winfo_reqheight()
+        self.canvas.configure(scrollregion=(0, 0, width, max(need, height)))
+        if need > height + 1:
+            if not self.bar.winfo_ismapped():
+                self.bar.pack(side="right", fill="y")
+        else:
+            self.bar.pack_forget()
+            self.canvas.yview_moveto(0)
+
+    def _wheel(self, event: tk.Event) -> None:
+        if not self.winfo_ismapped() or not self.bar.winfo_ismapped():
+            return
+        if event.widget.winfo_toplevel() is not self.winfo_toplevel():
+            return
+        if event.widget.winfo_class() in ("Treeview", "Listbox", "Text"):
+            return
+        if event.num == 4:
+            step = -1
+        elif event.num == 5:
+            step = 1
+        else:
+            step = -1 if event.delta > 0 else 1
+        self.canvas.yview_scroll(step * 3, "units")
+
+
+class TabView(ttk.Frame):
+    """Tab strip with equal-size tabs, a lighter selected tab and a blue line on top of it."""
+
+    def __init__(self, parent: tk.Misc, on_change=None):
+        super().__init__(parent)
+        self._on_change = on_change
+        self._tabs: list[tuple[tk.Frame, tk.Frame, tk.Label, ScrollPage]] = []
+        self._current = -1
+        self.strip = ttk.Frame(self)
+        self.strip.pack(fill="x")
+        self.content = tk.Frame(self, bg=BG, highlightthickness=1, highlightbackground=BORDER, bd=0)
+        self.content.pack(fill="both", expand=True)
+
+    def add(self, text: str) -> ScrollPage:
+        i = len(self._tabs)
+        cell = tk.Frame(self.strip, bg=PANEL, cursor="hand2")
+        cell.grid(row=0, column=i, sticky="ew", padx=(0, 3))
+        self.strip.columnconfigure(i, uniform="tabs", minsize=150)
+        line = tk.Frame(cell, bg=PANEL, height=3)
+        line.pack(fill="x")
+        label = tk.Label(cell, text=text, bg=PANEL, fg=MUTED, padx=24, pady=9, font=("TkDefaultFont", 10, "bold"), cursor="hand2")
+        label.pack(fill="x")
+        page = ScrollPage(self.content)
+        self._tabs.append((cell, line, label, page))
+        for w in (cell, line, label):
+            w.bind("<Button-1>", lambda e, n=i: self.select(n))
+        if i == 0:
+            self.select(0)
+        return page
+
+    def select(self, index: int) -> None:
+        if index == self._current:
+            return
+        for n, (cell, line, label, page) in enumerate(self._tabs):
+            active = n == index
+            bg = TAB_ACTIVE if active else PANEL
+            cell.config(bg=bg)
+            label.config(bg=bg, fg=FG if active else MUTED)
+            line.config(bg=ACCENT if active else bg)
+            if active:
+                page.pack(fill="both", expand=True)
+            else:
+                page.pack_forget()
+        self._current = index
+        if self._on_change:
+            self._on_change(index)
+
+    def index(self) -> int:
+        return max(self._current, 0)
