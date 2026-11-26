@@ -1,3 +1,6 @@
+import sys
+
+import pytest
 import json
 from pathlib import Path
 
@@ -95,3 +98,57 @@ def test_every_gui_string_exists():
     assert all(f"opt_{i.id}" in STRINGS for i in OPTIONAL_ITEMS)
     channel = {"channel_stable", "channel_beta"}
     assert channel <= set(STRINGS)
+
+
+# ---- Java default / detection ------------------------------------------------
+
+def _fake_java(root, name, version):
+    import os
+    import stat
+    import sys
+
+    exe = root / name / "bin" / ("java.bat" if sys.platform.startswith("win") else "java")
+    exe.parent.mkdir(parents=True)
+    exe.write_text(f'#!/bin/sh\necho \'openjdk version "{version}" 2024-01-16\' >&2\n')
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    return exe
+
+
+def test_default_java_major():
+    from gtnh_installer.install import default_java_major
+
+    assert default_java_major([26, 25, 24, 17]) == 25
+    assert default_java_major([21, 20, 19, 18, 17]) == 21
+    assert default_java_major([8]) == 8
+    assert default_java_major([]) == 25
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="fake java is a shell script")
+def test_detect_and_ensure_java(tmp_path, monkeypatch):
+    from gtnh_installer import javas
+    from gtnh_installer.util import Reporter
+
+    jdir = tmp_path / "java"
+    _fake_java(jdir, "temurin-21", "21.0.2")
+    _fake_java(jdir, "temurin-25", "25.0.1")
+    (jdir / "junk").mkdir()
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setenv("PATH", "/nonexistent")
+    found = javas.detect_system_javas(jdir)
+    assert [(j.major, j.version) for j in found if j.exe.is_relative_to(jdir)] == [(25, "25.0.1"), (21, "21.0.2")]
+
+    exe = javas.ensure_java(jdir, 21, Reporter())
+    assert exe == jdir / "temurin-21" / "bin" / "java"
+
+
+def test_language_detection(monkeypatch):
+    from gtnh_installer import i18n
+
+    for var in ("GTNH_LANG", "LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("LANG", "tr_TR.UTF-8")
+    assert i18n.detect_language() == "tr"
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+    assert i18n.detect_language() == "en"
+    monkeypatch.setenv("LANGUAGE", "tr:en")
+    assert i18n.detect_language() == "tr"

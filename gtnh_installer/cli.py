@@ -126,7 +126,7 @@ def run(argv: Optional[list[str]] = None) -> int:
     if args.cmd in (None, "gui"):
         from .gui import main as gui_main
 
-        gui_main()
+        gui_main(prompt_language=not args.lang)
         return 0
     try:
         return _dispatch(args)

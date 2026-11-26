@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 from typing import Callable, Optional
 
 from . import __version__, javas
-from .i18n import t
-from .install import JavaChoice, default_instance_name, detect_variant, install_instance
+from .i18n import detect_language, set_language, t
+from .install import JavaChoice, default_instance_name, default_java_major, detect_variant, install_instance
 from .prism import InstanceInfo, PrismPaths, detect_prism, list_instances, load_paths, minecraft_dir, read_instance
+from .theme import FG, apply_dark, center_on, dark_titlebar, style_text
 from .update import OPTIONAL_ITEMS, MigrationOptions, detect_user_mods, present_items, update_instance
 from .util import Cancelled, Reporter, platform_info
 from .versions import GtnhVersion, fetch_versions, upgrade_skips_major
@@ -22,9 +25,11 @@ from .versions import GtnhVersion, fetch_versions, upgrade_skips_major
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title(f"{t('app_title')} {__version__}")
-        self.geometry("920x860")
-        self.minsize(820, 700)
+        apply_dark(self)
+        self.title(f"{t('app_title')} v{__version__}")
+        height = min(990, self.winfo_screenheight() - 90)
+        self.geometry(f"940x{height}")
+        self.minsize(840, 700)
 
         self.versions: list[GtnhVersion] = []
         self.prism: Optional[PrismPaths] = None
@@ -34,14 +39,15 @@ class App(tk.Tk):
         self._callbacks: dict[int, Callable] = {}
         self._cb_id = 0
 
+        self._build_banner()
         self._build_header()
+        self._build_footer()  # packed at the bottom first so the log never gets pushed off-screen
         self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, padx=8, pady=4)
+        self.notebook.pack(fill="both", expand=True, padx=14, pady=6)
         self.install_tab = InstallTab(self.notebook, self)
         self.update_tab = UpdateTab(self.notebook, self)
         self.notebook.add(self.install_tab, text=t("tab_install"))
         self.notebook.add(self.update_tab, text=t("tab_update"))
-        self._build_footer()
 
         self.after(100, self._pump)
         self._detect_prism()
@@ -52,9 +58,20 @@ class App(tk.Tk):
         return tab.majors()
 
     # ------------------------------------------------------------------ layout
+    def _build_banner(self) -> None:
+        bar = ttk.Frame(self, style="Card.TFrame")
+        bar.pack(fill="x")
+        inner = ttk.Frame(bar, style="Card.TFrame")
+        inner.pack(fill="x", padx=18, pady=14)
+        titles = ttk.Frame(inner, style="Card.TFrame")
+        titles.pack(side="left")
+        ttk.Label(titles, text=t("app_name"), style="Title.TLabel").pack(anchor="w")
+        ttk.Label(titles, text=t("app_subtitle"), style="Sub.TLabel").pack(anchor="w")
+        ttk.Label(inner, text=f"v{__version__}", style="Badge.TLabel").pack(side="right")
+
     def _build_header(self) -> None:
         f = ttk.Frame(self)
-        f.pack(fill="x", padx=8, pady=(8, 0))
+        f.pack(fill="x", padx=14, pady=(12, 0))
         ttk.Label(f, text=t("prism_folder")).grid(row=0, column=0, sticky="w")
         self.prism_var = tk.StringVar()
         self.prism_combo = ttk.Combobox(f, textvariable=self.prism_var)
@@ -68,7 +85,7 @@ class App(tk.Tk):
 
     def _build_footer(self) -> None:
         f = ttk.Frame(self)
-        f.pack(fill="x", padx=8, pady=(0, 8))
+        f.pack(side="bottom", fill="x", padx=14, pady=(0, 12))
         self.progress_label = ttk.Label(f, text="")
         self.progress_label.pack(fill="x")
         row = ttk.Frame(f)
@@ -77,8 +94,9 @@ class App(tk.Tk):
         self.progress.pack(side="left", fill="x", expand=True)
         self.cancel_btn = ttk.Button(row, text=t("cancel"), command=self._cancel, state="disabled")
         self.cancel_btn.pack(side="left", padx=(6, 0))
-        self.log_text = tk.Text(f, height=8, state="disabled", wrap="word")
-        self.log_text.pack(fill="x", pady=(4, 0))
+        self.log_text = tk.Text(f, height=6, state="disabled", wrap="word")
+        style_text(self.log_text)
+        self.log_text.pack(fill="x", pady=(6, 0))
 
     # ------------------------------------------------------------------ Prism folder
     def _detect_prism(self) -> None:
@@ -106,8 +124,6 @@ class App(tk.Tk):
             self.prism = load_paths(p)
             self.instances_label.config(text=t("instances_folder", path=self.prism.instances_dir))
         self.update_tab.reload_instances()
-        self.install_tab.java.refresh_installed()
-        self.update_tab.java.refresh_installed()
 
     # ------------------------------------------------------------------ background tasks
     def run_bg(self, work: Callable[[], object], done: Callable[[object, Optional[BaseException]], None]) -> None:
@@ -216,58 +232,79 @@ class App(tk.Tk):
 # ============================================================================== Java panel
 
 class JavaPanel(ttk.LabelFrame):
-    """Mirrors Prism's instance Java settings: override checkbox, path, browse, download, test."""
+    """Java choice. Default: Java 25 (or the newest the pack supports), fetched automatically.
+    Ticking the checkbox lets the user detect, browse for or download a Java of their own."""
 
     def __init__(self, parent: tk.Misc, app: App, majors_provider: Callable[[], tuple[list[int], list[int]]]):
         super().__init__(parent, text=t("java_group"))
         self.app = app
         self.majors_provider = majors_provider
-        self.use_java = tk.BooleanVar(value=True)
+        self.use_java = tk.BooleanVar(value=False)
         self.path = tk.StringVar()
         self.skip_compat = tk.BooleanVar(value=False)
-        self._installed: list[tuple[str, Path]] = []
 
         ttk.Checkbutton(self, text=t("java_override"), variable=self.use_java, command=self._toggle).grid(
-            row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 0)
+            row=0, column=0, columnspan=4, sticky="w", padx=10, pady=(8, 2)
         )
-        ttk.Label(self, text=t("java_installed")).grid(row=1, column=0, sticky="w", padx=6)
-        self.installed_combo = ttk.Combobox(self, state="readonly")
-        self.installed_combo.grid(row=1, column=1, columnspan=3, sticky="ew", padx=6, pady=2)
-        self.installed_combo.bind("<<ComboboxSelected>>", self._pick_installed)
-        ttk.Label(self, text=t("java_exe")).grid(row=2, column=0, sticky="w", padx=6)
-        self.entry = ttk.Entry(self, textvariable=self.path)
-        self.entry.grid(row=2, column=1, columnspan=3, sticky="ew", padx=6, pady=2)
-        self.btn_browse = ttk.Button(self, text=t("browse"), command=self._browse)
-        self.btn_browse.grid(row=3, column=1, sticky="w", padx=6, pady=2)
-        self.btn_download = ttk.Button(self, text=t("java_download"), command=self._open_download)
-        self.btn_download.grid(row=3, column=2, sticky="w", pady=2)
-        self.btn_test = ttk.Button(self, text=t("java_test"), command=self._test)
-        self.btn_test.grid(row=3, column=3, sticky="w", padx=6, pady=2)
-        self.chk_skip = ttk.Checkbutton(self, text=t("java_skip_compat"), variable=self.skip_compat)
-        self.chk_skip.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 4))
-        self.columnconfigure(1, weight=1)
+        self.default_label = ttk.Label(self, text="", style="Muted.TLabel")
+        self.default_label.grid(row=1, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 6))
+
+        self.custom = ttk.Frame(self)
+        self.custom.grid(row=2, column=0, columnspan=4, sticky="ew", padx=10, pady=(0, 8))
+        self.custom.columnconfigure(1, weight=1)
+        ttk.Label(self.custom, text=t("java_exe")).grid(row=0, column=0, sticky="w")
+        self.entry = ttk.Entry(self.custom, textvariable=self.path)
+        self.entry.grid(row=0, column=1, columnspan=4, sticky="ew", padx=(8, 0), pady=3)
+        self.btn_detect = ttk.Button(self.custom, text=t("java_detect"), command=self._detect)
+        self.btn_detect.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.btn_browse = ttk.Button(self.custom, text=t("browse"), command=self._browse)
+        self.btn_browse.grid(row=1, column=2, sticky="w", padx=(6, 0), pady=3)
+        self.btn_download = ttk.Button(self.custom, text=t("java_download"), command=self._open_download)
+        self.btn_download.grid(row=1, column=3, sticky="e", padx=(6, 0), pady=3)
+        self.btn_test = ttk.Button(self.custom, text=t("java_test"), command=self._test)
+        self.btn_test.grid(row=1, column=4, sticky="e", padx=(6, 0), pady=3)
+        self.custom.columnconfigure(3, weight=1)
+        self.chk_skip = ttk.Checkbutton(self.custom, text=t("java_skip_compat"), variable=self.skip_compat)
+        self.chk_skip.grid(row=2, column=0, columnspan=5, sticky="w", pady=(2, 0))
+        self.columnconfigure(0, weight=1)
         self._toggle()
 
+    def default_major(self) -> int:
+        return default_java_major(self.majors_provider()[1])
+
+    def refresh_default(self) -> None:
+        self.default_label.config(text=t("java_default", major=self.default_major()))
+
     def _toggle(self) -> None:
-        state = "normal" if self.use_java.get() else "disabled"
-        for w in (self.entry, self.btn_browse, self.btn_download, self.btn_test, self.chk_skip):
+        custom = self.use_java.get()
+        state = "normal" if custom else "disabled"
+        for w in (self.entry, self.btn_detect, self.btn_browse, self.btn_download, self.btn_test, self.chk_skip):
             w.config(state=state)
-        self.installed_combo.config(state="readonly" if self.use_java.get() else "disabled")
-
-    def refresh_installed(self) -> None:
-        self._installed = javas.installed_javas(self.app.prism.java_dir) if self.app.prism else []
-        self.installed_combo["values"] = [n for n, _ in self._installed]
-
-    def _pick_installed(self, _event=None) -> None:
-        i = self.installed_combo.current()
-        if i >= 0:
-            self.path.set(str(self._installed[i][1]))
+        self.refresh_default()
+        if custom:
+            self.default_label.grid_remove()
+        else:
+            self.default_label.grid()
 
     def set_path(self, path: Path) -> None:
         self.use_java.set(True)
         self._toggle()
         self.path.set(str(path))
-        self.refresh_installed()
+
+    def _detect(self) -> None:
+        self.btn_detect.config(state="disabled")
+        self.app.log(t("java_detecting"))
+        java_dir = self.app.prism.java_dir if self.app.prism else None
+
+        def done(result, error):
+            self.btn_detect.config(state="normal")
+            if error:
+                return messagebox.showerror(t("error"), str(error), parent=self)
+            if not result:
+                return messagebox.showinfo(t("java_group"), t("java_detect_none"), parent=self)
+            DetectDialog(self.app, self, result)  # type: ignore[arg-type]
+
+        self.app.run_bg(lambda: javas.detect_system_javas(java_dir), done)
 
     def _browse(self) -> None:
         start = str(self.app.prism.java_dir) if self.app.prism else str(Path.home())
@@ -292,17 +329,19 @@ class JavaPanel(ttk.LabelFrame):
         JavaDialog(self.app, self)
 
     def choice(self) -> Optional[JavaChoice]:
-        if not self.use_java.get() or not self.path.get().strip():
+        if not self.use_java.get():
+            return JavaChoice(auto_major=self.default_major())
+        if not self.path.get().strip():
             return None
         return JavaChoice(Path(self.path.get().strip()), self.skip_compat.get())
 
     def confirm_compat(self) -> bool:
         """Warn if the chosen Java major is outside the recommended set for the selected pack."""
         ch = self.choice()
-        if not ch or ch.ignore_compat:
+        if not ch or not ch.path or ch.ignore_compat:
             return True
         recommended, _ = self.majors_provider()
-        major, _line = javas.probe_java(ch.path or Path())
+        major, _line = javas.probe_java(ch.path)
         if major is not None and recommended and major not in recommended:
             return messagebox.askyesno(
                 t("warning"),
@@ -312,6 +351,48 @@ class JavaPanel(ttk.LabelFrame):
         return True
 
 
+class DetectDialog(tk.Toplevel):
+    """Lists the detected Javas; clicking one fills in its location."""
+
+    def __init__(self, app: App, panel: JavaPanel, found: list[javas.DetectedJava]):
+        super().__init__(app)
+        self.panel, self.found = panel, found
+        self.title(t("java_detect_title"))
+        center_on(self, app, 760, 380)
+        self.transient(app)
+        dark_titlebar(self)
+
+        ttk.Label(self, text=t("java_detect_hint"), style="Muted.TLabel").pack(anchor="w", padx=12, pady=(12, 6))
+        box = ttk.Frame(self)
+        box.pack(fill="both", expand=True, padx=12)
+        cols = ("major", "version", "name", "path")
+        self.tree = ttk.Treeview(box, columns=cols, show="headings", selectmode="browse")
+        for c, text, w in (
+            ("major", t("java_col_major"), 60),
+            ("version", t("java_col_version"), 110),
+            ("name", t("java_col_name"), 170),
+            ("path", t("java_col_path"), 380),
+        ):
+            self.tree.heading(c, text=text)
+            self.tree.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+        for i, j in enumerate(found):
+            self.tree.insert("", "end", iid=str(i), values=(f"Java {j.major}", j.version, j.name, str(j.exe)))
+        self.tree.bind("<ButtonRelease-1>", self._clicked)
+        self.tree.bind("<Return>", self._clicked)
+        ttk.Button(self, text=t("cancel"), command=self.destroy).pack(anchor="e", padx=12, pady=10)
+        self.grab_set()
+
+    def _clicked(self, _event=None) -> None:
+        sel = self.tree.selection()
+        if sel:
+            self.panel.set_path(self.found[int(sel[0])].exe)
+            self.destroy()
+
+
 class JavaDialog(tk.Toplevel):
     """Same layout as Prism's 'Install Java' window: vendor / major / version table."""
 
@@ -319,7 +400,7 @@ class JavaDialog(tk.Toplevel):
         super().__init__(app)
         self.app, self.panel = app, panel
         self.title(t("java_dialog_title"))
-        self.geometry("820x480")
+        center_on(self, app, 820, 480)
         self.transient(app)
         self.builds: list[javas.JavaBuild] = []
         self.vendor_keys = list(javas.VENDORS)
@@ -520,7 +601,7 @@ class InstallTab(ttk.Frame):
         bottom.pack(fill="x", padx=6, pady=6)
         self.keep_zip = tk.BooleanVar(value=False)
         ttk.Checkbutton(bottom, text=t("keep_zip"), variable=self.keep_zip).pack(side="left")
-        self.action_btn = ttk.Button(bottom, text=t("install_btn"), command=self._install)
+        self.action_btn = ttk.Button(bottom, text=t("install_btn"), command=self._install, style="Accent.TButton")
         self.action_btn.pack(side="right")
 
     # ---
@@ -557,6 +638,7 @@ class InstallTab(ttk.Frame):
         v = self.selected()
         if v and not self._name_edited:
             self.name.set(default_instance_name(v, self.variant.get()))
+        self.java.refresh_default()
 
     def _open_changelog(self) -> None:
         v = self.selected()
@@ -606,7 +688,7 @@ class UpdateTab(ttk.Frame):
         ttk.Checkbutton(f, text=t("show_beta"), variable=self.show_beta, command=self.fill_versions).grid(row=1, column=2, sticky="w")
         f.columnconfigure(1, weight=1)
 
-        self.warn = ttk.Label(self, text="", foreground="#b45309", wraplength=860, justify="left")
+        self.warn = ttk.Label(self, text="", foreground="#f5a524", wraplength=860, justify="left")
         self.warn.pack(fill="x", padx=6)
 
         vf = ttk.Frame(self)
@@ -655,7 +737,7 @@ class UpdateTab(ttk.Frame):
         ttk.Label(self, text=t("backup_notice"), wraplength=860, justify="left").pack(fill="x", padx=6, pady=2)
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", padx=6, pady=6)
-        self.action_btn = ttk.Button(bottom, text=t("update_btn"), command=self._update)
+        self.action_btn = ttk.Button(bottom, text=t("update_btn"), command=self._update, style="Accent.TButton")
         self.action_btn.pack(side="right")
 
     # --- state
@@ -722,6 +804,7 @@ class UpdateTab(ttk.Frame):
             self.name.set(default_instance_name(v, self.variant.get()))
         skip = bool(inst and upgrade_skips_major(inst.version, v.id))
         self.warn.config(text=t("skip_major_warning") if skip else "")
+        self.java.refresh_default()
 
     # --- extra mods
     def _mods_toggled(self) -> None:
@@ -798,12 +881,63 @@ class UpdateTab(ttk.Frame):
         variant, name, java = self.variant.get(), self.name.get().strip() or default_instance_name(v, self.variant.get()), self.java.choice()
 
         def done(path):
-            self.app.install_tab.java.refresh_installed()
             self.reload_instances()
             messagebox.showinfo(t("info"), t("done_update", path=path), parent=self)
 
         self.app.start_task(lambda r: update_instance(prism, inst.path, v, variant, name, java, opts, r), done)
 
 
-def main() -> None:
+class LanguageDialog(tk.Tk):
+    """First screen: pick English or Turkish (preselected from the system language)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        apply_dark(self)
+        self.title(t("lang_window"))
+        self.resizable(False, False)
+        self.choice: Optional[str] = None
+        self.lang = tk.StringVar(value=detect_language())
+
+        card = ttk.Frame(self, style="Card.TFrame")
+        card.pack(fill="x")
+        ttk.Label(card, text="GTNH", style="Title.TLabel").pack(padx=30, pady=(22, 0))
+        ttk.Label(card, text=t("lang_prompt"), style="Sub.TLabel", justify="center").pack(padx=30, pady=(4, 18))
+
+        body = ttk.Frame(self)
+        body.pack(fill="x", padx=30, pady=18)
+        big = tkfont.nametofont("TkDefaultFont").copy()
+        big.configure(size=12, weight="bold")
+        for code, label in (("en", "English"), ("tr", "Türkçe")):
+            row = tk.Radiobutton(
+                body, text=label, value=code, variable=self.lang, indicatoron=False, font=big,
+                bg="#2a2e40", fg=FG, selectcolor="#2f4a94", activebackground="#353a52", activeforeground=FG,
+                relief="flat", bd=0, padx=20, pady=10, cursor="hand2", highlightthickness=0,
+            )
+            row.pack(fill="x", pady=4)
+        ttk.Button(body, text=t("lang_continue"), style="Accent.TButton", command=self._continue).pack(fill="x", pady=(14, 0))
+        self.bind("<Return>", lambda e: self._continue())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.update_idletasks()
+        w, h = 340, self.winfo_reqheight()
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 3
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _continue(self) -> None:
+        self.choice = self.lang.get()
+        self.destroy()
+
+
+def ask_language() -> Optional[str]:
+    dlg = LanguageDialog()
+    dlg.mainloop()
+    return dlg.choice
+
+
+def main(prompt_language: bool = True) -> None:
+    if prompt_language:
+        lang = ask_language()
+        if lang is None:  # window closed without choosing
+            sys.exit(0)
+        set_language(lang)
     App().mainloop()

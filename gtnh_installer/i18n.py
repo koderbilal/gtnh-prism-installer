@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import locale
 import os
+import sys
 
 _lang = "en"
 
 STRINGS: dict[str, tuple[str, str]] = {
     # key: (Türkçe, English)
-    "app_title": ("GTNH Prism Yükleyici", "GTNH Prism Installer"),
+    "app_title": ("GTNH", "GTNH"),
+    "app_name": ("GTNH Prism Yükleyici", "GTNH Prism Installer"),
+    "app_subtitle": (
+        "GregTech: New Horizons'u Prism Launcher'a kur ve yükselt",
+        "Install and upgrade GregTech: New Horizons in Prism Launcher",
+    ),
+    "lang_window": ("Dil / Language", "Dil / Language"),
+    "lang_prompt": ("Dil seçin\nSelect language", "Dil seçin\nSelect language"),
+    "lang_continue": ("Devam / Continue", "Devam / Continue"),
     "prism_folder": ("Prism Launcher klasörü:", "Prism Launcher folder:"),
     "browse": ("Gözat…", "Browse…"),
     "instances_folder": ("Örnekler klasörü: {path}", "Instances folder: {path}"),
@@ -37,7 +46,22 @@ STRINGS: dict[str, tuple[str, str]] = {
     "update_btn": ("Yükselt", "Update"),
     "cancel": ("İptal", "Cancel"),
     "java_group": ("Java", "Java"),
-    "java_override": ("Java kurulumu", "Java installation"),
+    "java_override": ("Java kurulumu (kendim seçeceğim)", "Java installation (choose myself)"),
+    "java_default": (
+        "Varsayılan: Java {major} (Adoptium). Kurulu değilse otomatik indirilir.",
+        "Default: Java {major} (Adoptium). Downloaded automatically if not installed.",
+    ),
+    "java_detect": ("Algıla", "Detect"),
+    "java_detecting": ("Java sürümleri aranıyor…", "Searching for Java installations…"),
+    "java_detect_title": ("Algılanan Java sürümleri", "Detected Java installations"),
+    "java_detect_hint": (
+        "Bir Java'ya tıklayın, konumu otomatik seçilir.",
+        "Click a Java to select its location automatically.",
+    ),
+    "java_detect_none": ("Bilgisayarda Java bulunamadı. \"Java indir\" ile kurabilirsiniz.", "No Java found on this computer. Use \"Download Java\" to install one."),
+    "java_col_major": ("Java", "Java"),
+    "java_col_path": ("Konum", "Location"),
+    "java_auto_ready": ("Java {major} hazırlanıyor…", "Preparing Java {major}…"),
     "java_exe": ("Java çalıştırılabilir dosyası:", "Java executable:"),
     "java_installed": ("Kurulu Java:", "Installed Java:"),
     "java_download": ("Java indir…", "Download Java…"),
@@ -137,15 +161,32 @@ STRINGS: dict[str, tuple[str, str]] = {
 }
 
 
+def _lang_from_code(code: str) -> str:
+    code = (code or "").lower()
+    return "tr" if code.startswith("tr") or code.startswith("turkish") else "en"
+
+
 def detect_language() -> str:
+    """Turkish if the system language is Turkish, English for everything else."""
     env = os.environ.get("GTNH_LANG")
     if env:
-        return "tr" if env.lower().startswith("tr") else "en"
+        return _lang_from_code(env)
+    for var in ("LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"):
+        value = os.environ.get(var, "").split(":")[0]
+        if value and value not in ("C", "POSIX"):
+            return _lang_from_code(value)
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+
+            langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+            return "tr" if (langid & 0x3FF) == 0x1F else "en"  # LANG_TURKISH
+        except Exception:  # noqa: BLE001
+            pass
     try:
-        code = locale.getlocale()[0] or os.environ.get("LANG", "")
-    except Exception:
-        code = os.environ.get("LANG", "")
-    return "tr" if (code or "").lower().startswith("tr") else "en"
+        return _lang_from_code(locale.getlocale()[0] or "")
+    except Exception:  # noqa: BLE001
+        return "en"
 
 
 def set_language(lang: str) -> None:

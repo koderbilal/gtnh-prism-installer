@@ -113,3 +113,22 @@ def test_find_user_mods_without_stock_list_returns_everything(tmp_path):
     mods.mkdir()
     (mods / "a-1.jar").write_text("")
     assert find_user_mods(tmp_path, None) == ["a-1.jar"]
+
+
+def test_install_with_default_java_reuses_prism_java(server, tmp_path, monkeypatch):
+    import sys
+
+    import pytest
+    from test_core import _fake_java
+
+    if sys.platform.startswith("win"):
+        pytest.skip("fake java is a shell script")
+    base, prism_dir = _setup(server, tmp_path, monkeypatch)
+    paths = load_paths(prism_dir)
+    exe = _fake_java(paths.java_dir, "temurin-25", "25.0.1")
+    from gtnh_installer.install import install_instance
+
+    version = parse_manifest(_manifest(base, ["2.9.0"]))[0]
+    out = install_instance(paths, version, "modern", "Auto", JavaChoice(auto_major=25), Reporter())
+    cfg = read_cfg(out / "instance.cfg")
+    assert cfg["OverrideJavaLocation"] == "true" and cfg["JavaPath"] == exe.as_posix()

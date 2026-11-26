@@ -13,7 +13,7 @@ from urllib.parse import unquote, urlparse
 
 from .archive import extract_zip, zip_instance_prefix
 from .cfg import read_cfg, update_cfg
-from .javas import probe_java
+from .javas import ensure_java, probe_java
 from .prism import PrismPaths, unique_dir
 from .util import InstallerError, Reporter, cache_dir, download_file, human_size
 from .versions import GtnhVersion
@@ -26,6 +26,26 @@ STALE_JAVA_KEYS = ("JavaVersion", "JavaArchitecture", "JavaRealArchitecture", "J
 class JavaChoice:
     path: Optional[Path] = None  # None keeps the pack's/Prism's automatic Java selection
     ignore_compat: bool = False
+    auto_major: Optional[int] = None  # no path: use/download this Java major automatically
+
+
+DEFAULT_JAVA_MAJOR = 25
+
+
+def default_java_major(available: list[int]) -> int:
+    """Java 25 when the pack supports it, otherwise the newest supported major below it."""
+    if not available or DEFAULT_JAVA_MAJOR in available:
+        return DEFAULT_JAVA_MAJOR
+    below = [m for m in available if m < DEFAULT_JAVA_MAJOR]
+    return max(below) if below else min(available)
+
+
+def resolve_java_choice(java: Optional[JavaChoice], prism: PrismPaths, reporter: Reporter) -> Optional[JavaChoice]:
+    if not java or java.path or not java.auto_major:
+        return java
+    reporter.log(f"Java {java.auto_major} hazırlanıyor / preparing Java {java.auto_major}...")
+    exe = ensure_java(prism.java_dir, java.auto_major, reporter)
+    return JavaChoice(exe, java.ignore_compat)
 
 
 def default_instance_name(version: GtnhVersion, variant: str) -> str:
@@ -78,6 +98,7 @@ def install_instance(
     url = version.url_for(variant)
     if not url:
         raise InstallerError(f"{version.id} için {variant} paketi yok / no {variant} pack for {version.id}")
+    java = resolve_java_choice(java, prism, reporter)
 
     zip_path = cache_dir() / unquote(Path(urlparse(url).path).name)
     reporter.log(f"Paket indiriliyor / downloading pack: {url}")

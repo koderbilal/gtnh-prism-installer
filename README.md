@@ -5,8 +5,13 @@ GregTech: New Horizons (GTNH) sürümlerini listeleyip **Prism Launcher**'a kura
 
 ## Özellikler
 - GTNH sürüm listesini resmi `versions.json` manifestinden çeker; sürümü seçip Prism'e örnek (instance) olarak kurar.
-- Java seçimi Prism'deki gibi: Mojang / Adoptium / Azul Zulu / IBM Semeru, ana sürüm, sürüm tablosu,
-  "Önerilen" filtresi, ya da kendi `java`/`javaw` yolunuz. Ayarlar örneğin `instance.cfg` dosyasına yazılır.
+- Açılışta dil seçimi (English / Türkçe). Sistem dili Türkçe ise Türkçe, değilse İngilizce seçili gelir.
+- Karanlık tema.
+- Java varsayılan olarak **Java 25** (paket desteklemiyorsa desteklediği en yeni sürüm) seçilir; kurulu değilse
+  Adoptium'dan otomatik indirilip Prism'in `java` klasörüne kurulur.
+- "Java kurulumu" kutusunu işaretlerseniz kendiniz seçersiniz: **Algıla** (bilgisayardaki Java'ları bulur, birine
+  tıklayınca yolu otomatik seçilir), **Gözat**, ya da Prism'deki gibi **Java indir** (Mojang / Adoptium / Azul Zulu /
+  IBM Semeru, ana sürüm, sürüm tablosu, "Önerilen" filtresi). Ayarlar örneğin `instance.cfg` dosyasına yazılır.
 - **Yükseltme:** eski örnekten yeni örneğe rehberdeki dosyaları kopyalar (eski örnek asla silinmez/değiştirilmez).
   İsteğe bağlı adımlar onay kutusudur: GregTech Pollution, ana menü müziği, Space Elevator animasyonu,
   lwjgl3ify tam ekran, Tesla Tower animasyonu, Tinkers klasik tezgah, InGameInfoXML, ServerUtilities,

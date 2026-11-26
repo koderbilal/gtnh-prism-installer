@@ -317,6 +317,114 @@ def installed_javas(java_dir: Path) -> list[tuple[str, Path]]:
     return result
 
 
+@dataclass
+class DetectedJava:
+    major: int
+    version: str
+    name: str
+    exe: Path
+
+
+def _java_roots(prism_java_dir: Optional[Path]) -> list[Path]:
+    """Directories that may contain runtime folders (each child is a candidate JAVA_HOME)."""
+    home = Path.home()
+    roots: list[Path] = []
+    if prism_java_dir:
+        roots.append(prism_java_dir)
+    if sys.platform.startswith("win"):
+        for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+            base = os.environ.get(var)
+            if base:
+                for vendor in (
+                    "Java", "Eclipse Adoptium", "Eclipse Foundation", "AdoptOpenJDK", "Zulu", "Microsoft",
+                    "Semeru", "BellSoft", "Amazon Corretto", "OpenJDK", "RedHat", "GraalVM",
+                ):
+                    roots.append(Path(base) / vendor)
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            roots.append(Path(local) / "Programs" / "Eclipse Adoptium")
+        mc = Path(os.environ.get("APPDATA", home)) / ".minecraft" / "runtime"
+    elif sys.platform == "darwin":
+        roots += [Path("/Library/Java/JavaVirtualMachines"), home / "Library/Java/JavaVirtualMachines", Path("/opt/homebrew/opt")]
+        mc = home / "Library/Application Support/minecraft/runtime"
+    else:
+        roots += [Path("/usr/lib/jvm"), Path("/usr/lib64/jvm"), Path("/usr/java"), Path("/opt")]
+        mc = home / ".minecraft" / "runtime"
+    roots += [
+        home / ".jdks",
+        home / ".sdkman/candidates/java",
+        home / ".asdf/installs/java",
+        home / ".local/share/mise/installs/java",
+    ]
+    if mc.is_dir():  # official launcher runtimes: runtime/<component>/<platform>/<component>
+        for comp in mc.iterdir():
+            for plat in comp.iterdir() if comp.is_dir() else []:
+                roots.append(plat)
+    return roots
+
+
+def detect_system_javas(prism_java_dir: Optional[Path] = None) -> list[DetectedJava]:
+    """Find Java runtimes on this computer (Prism's java dir, JAVA_HOME, PATH and usual install folders)."""
+    candidates: list[tuple[str, Path]] = []
+    for root in _java_roots(prism_java_dir):
+        try:
+            children = sorted(root.iterdir()) if root.is_dir() else []
+        except OSError:
+            continue
+        for d in children:
+            exe = find_java_exe(d) if d.is_dir() else None
+            if exe:
+                candidates.append((d.name, exe))
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home and Path(java_home).is_dir():
+        exe = find_java_exe(Path(java_home))
+        if exe:
+            candidates.append((Path(java_home).name, exe))
+    for exe_name in {java_exe_name(True), java_exe_name(False)}:
+        found = shutil.which(exe_name)
+        if found:
+            candidates.append((Path(found).parent.parent.name, Path(found)))
+
+    # Same runtime reachable through several paths (symlinks like /usr/bin/java or "default"):
+    # keep one entry and prefer a real, non-symlinked location.
+    unique: dict[str, tuple[bool, str, Path]] = {}
+    for name, exe in candidates:
+        try:
+            real = exe.resolve()
+        except OSError:
+            real = exe
+        is_link = real != exe.absolute()
+        key = str(real).lower()
+        if key not in unique or (unique[key][0] and not is_link):
+            unique[key] = (is_link, real.parent.parent.name if is_link else name, exe)
+
+    def probe(item: tuple[bool, str, Path]) -> Optional[DetectedJava]:
+        _link, name, exe = item
+        major, line = probe_java(exe, timeout=10)
+        if major is None:
+            return None
+        m = re.search(r'version "([^"]+)"', line)
+        return DetectedJava(major, m.group(1) if m else line, name, exe)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = [r for r in pool.map(probe, unique.values()) if r]
+    results.sort(key=lambda r: (-r.major, r.name.lower()))
+    return results
+
+
+def ensure_java(java_dir: Path, major: int, reporter: Reporter, vendor: str = "adoptium") -> Path:
+    """Return a Java <major> executable from Prism's java dir, downloading one if there is none."""
+    for _name, exe in installed_javas(java_dir):
+        found, _ = probe_java(exe)
+        if found == major:
+            reporter.log(f"Java {major} kullanılıyor / using Java {major}: {exe}")
+            return exe
+    builds = list_builds(vendor, major)
+    if not builds:
+        raise InstallerError(f"Java {major} indirilemedi / no downloadable Java {major} for this platform")
+    return install_java(builds[0], java_dir, reporter)
+
+
 def _install_mojang(build: JavaBuild, dest: Path, reporter: Reporter) -> None:
     manifest = fetch_json(build.url)
     files = manifest["files"]
@@ -402,7 +510,13 @@ def probe_java(exe: Path, timeout: float = 20) -> tuple[Optional[int], str]:
     if exe.name.lower() == "javaw.exe":
         exe = exe.with_name("java.exe")
     try:
-        proc = subprocess.run([str(exe), "-version"], capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            [str(exe), "-version"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # no console flash in windowed builds
+        )
     except (OSError, subprocess.SubprocessError) as e:
         return None, str(e)
     out = (proc.stderr or proc.stdout or "").strip()
