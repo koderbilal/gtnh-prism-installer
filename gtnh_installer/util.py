@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import ssl
 import sys
 import threading
 import time
@@ -17,6 +18,27 @@ from typing import Callable, Optional
 from . import __version__
 
 USER_AGENT = f"gtnh-prism-installer/{__version__}"
+
+
+_certifi_ctx: Optional[ssl.SSLContext] = None
+
+
+def urlopen(req, timeout: float = 30):
+    """urlopen that retries with the bundled certifi CA list when the OS store lacks a root
+    (common on Windows: CERTIFICATE_VERIFY_FAILED / unable to get local issuer certificate)."""
+    global _certifi_ctx
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.URLError as e:
+        if not isinstance(e.reason, ssl.SSLCertVerificationError):
+            raise
+        try:
+            import certifi
+        except ImportError:
+            raise e
+        if _certifi_ctx is None:
+            _certifi_ctx = ssl.create_default_context(cafile=certifi.where())
+        return urllib.request.urlopen(req, timeout=timeout, context=_certifi_ctx)
 
 
 class Cancelled(Exception):
@@ -81,7 +103,7 @@ def fetch_bytes(url: str, timeout: float = 30, retries: int = 3) -> bytes:
     last: Optional[Exception] = None
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(_request(url), timeout=timeout) as resp:
+            with urlopen(_request(url), timeout=timeout) as resp:
                 return resp.read()
         except urllib.error.HTTPError as e:
             last = e
@@ -125,7 +147,7 @@ def download_file(
         try:
             have = part.stat().st_size if part.exists() else 0
             headers = {"Range": f"bytes={have}-"} if have else {}
-            with urllib.request.urlopen(_request(url, headers), timeout=30) as resp:
+            with urlopen(_request(url, headers), timeout=30) as resp:
                 status = getattr(resp, "status", 200)
                 length = int(resp.headers.get("Content-Length") or 0)
                 if status == 206:

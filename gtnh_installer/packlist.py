@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import io
 import urllib.error
-import urllib.request
 import zipfile
 from typing import Optional
 
-from .util import InstallerError, _request
+from .util import InstallerError, _request, urlopen
 
 
 class HttpRangeFile(io.RawIOBase):
@@ -18,7 +17,7 @@ class HttpRangeFile(io.RawIOBase):
         self.url = url
         self.pos = 0
         req = _request(url, {"Range": "bytes=0-0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=30) as resp:
             if resp.status != 206:
                 raise InstallerError("Sunucu Range desteklemiyor / server does not support Range requests")
             cr = resp.headers.get("Content-Range", "")  # bytes 0-0/12345
@@ -49,7 +48,7 @@ class HttpRangeFile(io.RawIOBase):
             return 0
         end = min(self.pos + n, self.size) - 1
         req = _request(self.url, {"Range": f"bytes={self.pos}-{end}"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urlopen(req, timeout=60) as resp:
             data = resp.read()
         buf[: len(data)] = data
         self.pos += len(data)
