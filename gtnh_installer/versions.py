@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -12,6 +14,8 @@ from .util import InstallerError, fetch_json
 MANIFEST_URLS = (
     "https://www.gtnewhorizons.com/versions.json",
     "https://raw.githubusercontent.com/GTNewHorizons/GTNewHorizons.github.io/master/public/versions.json",
+    "https://cdn.jsdelivr.net/gh/GTNewHorizons/GTNewHorizons.github.io@master/public/versions.json",
+    "https://api.github.com/repos/GTNewHorizons/GTNewHorizons.github.io/contents/public/versions.json",
 )
 
 LTS_MAJORS = (8, 11, 17, 21, 25)
@@ -79,15 +83,22 @@ def parse_manifest(data: dict) -> list[GtnhVersion]:
     return versions
 
 
+def _load_manifest(url: str):
+    data = fetch_json(url)
+    if isinstance(data, dict) and data.get("encoding") == "base64" and "content" in data:
+        data = json.loads(base64.b64decode(data["content"]).decode("utf-8"))  # GitHub contents API
+    return data
+
+
 def fetch_versions() -> list[GtnhVersion]:
-    last: Optional[Exception] = None
+    errors: list[str] = []
     override = os.environ.get("GTNH_MANIFEST_URL")  # for testing/mirrors
     for url in ((override,) if override else MANIFEST_URLS):
         try:
-            return parse_manifest(fetch_json(url))
+            return parse_manifest(_load_manifest(url))
         except Exception as e:  # try the next mirror
-            last = e
-    raise InstallerError(f"Sürüm listesi alınamadı / Could not fetch version list: {last}")
+            errors.append(f"- {url}\n  {type(e).__name__}: {e}")
+    raise InstallerError("Sürüm listesi alınamadı / Could not fetch version list:\n" + "\n".join(errors))
 
 
 def major_minor(version_id: str) -> Optional[tuple[int, int]]:
